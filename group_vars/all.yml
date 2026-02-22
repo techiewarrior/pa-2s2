@@ -1,0 +1,4 @@
+# group_vars/all.yml (or vars_files)
+vault_pa_user: "admin"
+vault_pa_pass: "MySecretPass"
+vault_s1s2_preshared: "YourPskHere"

@@ -1,0 +1,312 @@
+---
+- name: Build S1 <-> S2 dual site-to-site VPN (tunnel.60/61) on both PAs
+  hosts: localhost
+  connection: local
+  gather_facts: no
+
+  collections:
+    - paloaltonetworks.panos   # PAN-OS Ansible collection [web:19]
+
+
+  vars_files:
+    - vars.yml
+
+  vars:
+    # Device connectivity
+
+    site1_provider:
+      ip_address: 192.0.2.11
+      username: "{{ vault_pa_user }}"
+      password: "{{ vault_pa_pass }}"
+
+    site2_provider:
+      ip_address: 192.0.2.21
+      username: "{{ vault_pa_user }}"
+      password: "{{ vault_pa_pass }}"
+
+    # Public peer IPs (underlay)
+    site1_public_ip: 203.0.113.11
+    site2_public_ip: 203.0.113.21
+
+    # Tunnel interface names
+    site1_tun_a: "tunnel.60"
+    site1_tun_b: "tunnel.61"
+    site2_tun_a: "tunnel.60"
+    site2_tun_b: "tunnel.61"
+
+    # Common routing + zone
+    vr_name: "INET"
+    s2s_zone: "S2S"
+
+    ike_crypto_profile: "IKE-Crypto-S1S2"
+    ipsec_crypto_profile: "IPSec-Crypto-S1S2"
+
+    # Local/remote interesting traffic (edit to match design)
+    site1_local_subnets:
+      - "192.168.10.0/24"
+      - "192.168.11.0/24"
+    site2_local_subnets:
+      - "192.168.20.0/24"
+      - "192.168.21.0/24"
+
+  tasks:
+
+  ###################################################################
+  # TUNNEL INTERFACES, ZONE, AND VR MEMBERSHIP
+  ###################################################################
+
+  - name: Ensure S2S zone exists on Site1
+    panos_zone:
+      provider: "{{ site1_provider }}"
+      zone: "{{ s2s_zone }}"
+      mode: "layer3"
+      state: "present"
+    tags: [zone]
+
+  - name: Ensure S2S zone exists on Site2
+    panos_zone:
+      provider: "{{ site2_provider }}"
+      zone: "{{ s2s_zone }}"
+      mode: "layer3"
+      state: "present"
+    tags: [zone]
+
+  - name: Create tunnel.60 on Site1 (layer3, in zone S2S, VR INET)
+    panos_tunnel:
+      provider: "{{ site1_provider }}"
+      if_name: "{{ site1_tun_a }}"
+      vr_name: "{{ vr_name }}"
+      zone_name: "{{ s2s_zone }}"
+      state: "present"
+    tags: [tunnel]
+
+  - name: Create tunnel.61 on Site1 (layer3, in zone S2S, VR INET)
+    panos_tunnel:
+      provider: "{{ site1_provider }}"
+      if_name: "{{ site1_tun_b }}"
+      vr_name: "{{ vr_name }}"
+      zone_name: "{{ s2s_zone }}"
+      state: "present"
+    tags: [tunnel]
+
+  - name: Create tunnel.60 on Site2 (layer3, in zone S2S, VR INET)
+    panos_tunnel:
+      provider: "{{ site2_provider }}"
+      if_name: "{{ site2_tun_a }}"
+      vr_name: "{{ vr_name }}"
+      zone_name: "{{ s2s_zone }}"
+      state: "present"
+    tags: [tunnel]
+
+  - name: Create tunnel.61 on Site2 (layer3, in zone S2S, VR INET)
+    panos_tunnel:
+      provider: "{{ site2_provider }}"
+      if_name: "{{ site2_tun_b }}"
+      vr_name: "{{ vr_name }}"
+      zone_name: "{{ s2s_zone }}"
+      state: "present"
+    tags: [tunnel]
+
+  ###################################################################
+  # CRYPTO PROFILES
+  ###################################################################
+
+  - name: Ensure IKE crypto profile on Site1
+    panos_ike_crypto_profile:
+      provider: "{{ site1_provider }}"
+      name: "{{ ike_crypto_profile }}"
+      dh_group: ["group14"]
+      encryption: ["aes-256-cbc"]
+      hash: ["sha256"]
+      lifetime_type: "seconds"
+      lifetime_value: 28800
+      state: "present"
+    tags: [crypto]
+
+  - name: Ensure IKE crypto profile on Site2
+    panos_ike_crypto_profile:
+      provider: "{{ site2_provider }}"
+      name: "{{ ike_crypto_profile }}"
+      dh_group: ["group14"]
+      encryption: ["aes-256-cbc"]
+      hash: ["sha256"]
+      lifetime_type: "seconds"
+      lifetime_value: 28800
+      state: "present"
+    tags: [crypto]
+
+  - name: Ensure IPsec crypto profile on Site1
+    panos_ipsec_profile:
+      provider: "{{ site1_provider }}"
+      name: "{{ ipsec_crypto_profile }}"
+      esp_authentication: ["sha256"]
+      esp_encryption: ["aes-256-gcm"]
+      dh_group: ["group14"]
+      lifetime_seconds: 3600
+      state: "present"
+    tags: [crypto]
+
+  - name: Ensure IPsec crypto profile on Site2
+    panos_ipsec_profile:
+      provider: "{{ site2_provider }}"
+      name: "{{ ipsec_crypto_profile }}"
+      esp_authentication: ["sha256"]
+      esp_encryption: ["aes-256-gcm"]
+      dh_group: ["group14"]
+      lifetime_seconds: 3600
+      state: "present"
+    tags: [crypto]
+
+  ###################################################################
+  # IKE GATEWAYS (one per tunnel per side)
+  ###################################################################
+
+  - name: IKEGW-S1-S2-60 on Site1
+    panos_ike_gateway:
+      provider: "{{ site1_provider }}"
+      name: "IKEGW-S1-S2-60"
+      protocol_version: "ikev2"
+      local_address: "{{ site1_public_ip }}"
+      peer_address: "{{ site2_public_ip }}"
+      pre_shared_key: "{{ vault_s1s2_preshared }}"
+      ike_crypto_profile: "{{ ike_crypto_profile }}"
+      state: "present"
+    tags: [ike]
+
+  - name: IKEGW-S2-S1-60 on Site2
+    panos_ike_gateway:
+      provider: "{{ site2_provider }}"
+      name: "IKEGW-S2-S1-60"
+      protocol_version: "ikev2"
+      local_address: "{{ site2_public_ip }}"
+      peer_address: "{{ site1_public_ip }}"
+      pre_shared_key: "{{ vault_s1s2_preshared }}"
+      ike_crypto_profile: "{{ ike_crypto_profile }}"
+      state: "present"
+    tags: [ike]
+
+  - name: IKEGW-S1-S2-61 on Site1
+    panos_ike_gateway:
+      provider: "{{ site1_provider }}"
+      name: "IKEGW-S1-S2-61"
+      protocol_version: "ikev2"
+      local_address: "{{ site1_public_ip }}"
+      peer_address: "{{ site2_public_ip }}"
+      pre_shared_key: "{{ vault_s1s2_preshared }}"
+      ike_crypto_profile: "{{ ike_crypto_profile }}"
+      state: "present"
+    tags: [ike]
+
+  - name: IKEGW-S2-S1-61 on Site2
+    panos_ike_gateway:
+      provider: "{{ site2_provider }}"
+      name: "IKEGW-S2-S1-61"
+      protocol_version: "ikev2"
+      local_address: "{{ site2_public_ip }}"
+      peer_address: "{{ site1_public_ip }}"
+      pre_shared_key: "{{ vault_s1s2_preshared }}"
+      ike_crypto_profile: "{{ ike_crypto_profile }}"
+      state: "present"
+    tags: [ike]
+
+  ###################################################################
+  # IPSEC TUNNELS
+  ###################################################################
+
+  - name: IPSec-S1-S2-60 on Site1
+    panos_ipsec_tunnel:
+      provider: "{{ site1_provider }}"
+      name: "IPSec-S1-S2-60"
+      tunnel_interface: "{{ site1_tun_a }}"
+      ak_ike_gateway: "IKEGW-S1-S2-60"
+      ak_ipsec_crypto_profile: "{{ ipsec_crypto_profile }}"
+      state: "present"
+    tags: [ipsec]
+
+  - name: IPSec-S2-S1-60 on Site2
+    panos_ipsec_tunnel:
+      provider: "{{ site2_provider }}"
+      name: "IPSec-S2-S1-60"
+      tunnel_interface: "{{ site2_tun_a }}"
+      ak_ike_gateway: "IKEGW-S2-S1-60"
+      ak_ipsec_crypto_profile: "{{ ipsec_crypto_profile }}"
+      state: "present"
+    tags: [ipsec]
+
+  - name: IPSec-S1-S2-61 on Site1
+    panos_ipsec_tunnel:
+      provider: "{{ site1_provider }}"
+      name: "IPSec-S1-S2-61"
+      tunnel_interface: "{{ site1_tun_b }}"
+      ak_ike_gateway: "IKEGW-S1-S2-61"
+      ak_ipsec_crypto_profile: "{{ ipsec_crypto_profile }}"
+      state: "present"
+    tags: [ipsec]
+
+  - name: IPSec-S2-S1-61 on Site2
+    panos_ipsec_tunnel:
+      provider: "{{ site2_provider }}"
+      name: "IPSec-S2-S1-61"
+      tunnel_interface: "{{ site2_tun_b }}"
+      ak_ike_gateway: "IKEGW-S2-S1-61"
+      ak_ipsec_crypto_profile: "{{ ipsec_crypto_profile }}"
+      state: "present"
+    tags: [ipsec]
+
+  ###################################################################
+  # OPTIONAL: SIMPLE ANY-ANY PROXY IDs (TIGHTEN LATER)
+  ###################################################################
+
+  - name: Proxy-id 60 on Site1
+    panos_ipsec_ipv4_proxyid:
+      provider: "{{ site1_provider }}"
+      ipsec_tunnel: "IPSec-S1-S2-60"
+      name: "S1-S2-60-any"
+      local_subnet: "0.0.0.0/0"
+      remote_subnet: "0.0.0.0/0"
+      state: "present"
+    tags: [proxyid]
+
+  - name: Proxy-id 60 on Site2
+    panos_ipsec_ipv4_proxyid:
+      provider: "{{ site2_provider }}"
+      ipsec_tunnel: "IPSec-S2-S1-60"
+      name: "S2-S1-60-any"
+      local_subnet: "0.0.0.0/0"
+      remote_subnet: "0.0.0.0/0"
+      state: "present"
+    tags: [proxyid]
+
+  - name: Proxy-id 61 on Site1
+    panos_ipsec_ipv4_proxyid:
+      provider: "{{ site1_provider }}"
+      ipsec_tunnel: "IPSec-S1-S2-61"
+      name: "S1-S2-61-any"
+      local_subnet: "0.0.0.0/0"
+      remote_subnet: "0.0.0.0/0"
+      state: "present"
+    tags: [proxyid]
+
+  - name: Proxy-id 61 on Site2
+    panos_ipsec_ipv4_proxyid:
+      provider: "{{ site2_provider }}"
+      ipsec_tunnel: "IPSec-S2-S1-61"
+      name: "S2-S1-61-any"
+      local_subnet: "0.0.0.0/0"
+      remote_subnet: "0.0.0.0/0"
+      state: "present"
+    tags: [proxyid]
+
+  ###################################################################
+  # COMMIT BOTH DEVICES
+  ###################################################################
+
+  - name: Commit Site1
+    panos_commit:
+      provider: "{{ site1_provider }}"
+    tags: [commit]
+
+  - name: Commit Site2
+    panos_commit:
+      provider: "{{ site2_provider }}"
+    tags: [commit]
